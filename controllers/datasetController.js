@@ -1,29 +1,18 @@
-/**
- * datasetController.js  (updated)
- * ─────────────────────────────────────────────────────────────
- * Changes from original:
- *   1. Every dataset upload now deploys a PolicyContract instance.
- *   2. The contract's contractId is stored in the BlockchainLog.
- *   3. Chain-linking fields (previousHash, entryHash, chainIndex)
- *      are computed and written for every log entry.
- *   4. generateBlockchainMetrics() is unchanged.
- */
-
 const fs      = require("fs");
 const csv     = require("csv-parser");
 const crypto  = require("crypto");
 
-const Dataset       = require("../models/Dataset");
-const BlockchainLog = require("../models/BlockchainLog");
-const { encrypt }   = require("../utils/crypto");
-const PolicyContract  = require("../utils/SmartContract");
+const Dataset            = require("../models/Dataset");
+const BlockchainLog      = require("../models/BlockchainLog");
+const { encrypt }        = require("../utils/crypto");
+const PolicyContract     = require("../utils/SmartContract");
 const { computeEntryHash } = require("../utils/chainVerifier");
 
 // ── Helper: next chain index + previous hash ───────────────
-/**
- * Fetches the current chain tip so we can link the next entry.
- * Returns { chainIndex, previousHash }.
- */
+// Race condition note: two simultaneous requests can read the same
+// tip. For single-user/low-concurrency this is acceptable.
+// For production: wrap getChainTip + BlockchainLog.create in a
+// MongoDB session/transaction.
 const getChainTip = async () => {
   const last = await BlockchainLog
     .findOne()
@@ -31,10 +20,7 @@ const getChainTip = async () => {
     .lean();
 
   if (!last) {
-    return {
-      chainIndex:   0,
-      previousHash: "0".repeat(64)
-    };
+    return { chainIndex: 0, previousHash: "0".repeat(64) };
   }
 
   return {
@@ -43,7 +29,6 @@ const getChainTip = async () => {
   };
 };
 
-// ── Helper: realistic simulated blockchain metrics ─────────
 const generateBlockchainMetrics = () => ({
   Blockchain_Tx_Cost_Gas:    Math.floor(50000 + Math.random() * 30000),
   Authorization_Latency_sec: parseFloat((1 + Math.random() * 4).toFixed(2))
@@ -69,16 +54,17 @@ exports.upload = async (req, res) => {
       Authorization_Latency_sec: req.body.Authorization_Latency_sec || blockchainMetrics.Authorization_Latency_sec
     };
 
-    // 1. Encrypt payload + compute dataset hash
     const payload   = JSON.stringify(dataWithMetrics, null, 2);
     const encrypted = encrypt(payload);
-    const hash      = crypto.createHash("sha256").update(payload + Date.now()).digest("hex");
 
-    // 2. Deploy a PolicyContract for this dataset ─────────────
+    // FIX: crypto.randomBytes instead of Date.now() — eliminates
+    // hash collision risk when identical payloads are uploaded
+    const entropy = crypto.randomBytes(8).toString("hex");
+    const hash    = crypto.createHash("sha256").update(payload + entropy).digest("hex");
+
     const contract = new PolicyContract(req.body.policy, req.body.ownerRole, hash);
     console.log(`📜 PolicyContract deployed: ${contract.contractId.substring(0, 16)}...`);
 
-    // 3. Save dataset
     await Dataset.create({
       metadata:         dataWithMetrics,
       encryptedPayload: encrypted,
@@ -87,7 +73,6 @@ exports.upload = async (req, res) => {
       ownerRole:        req.body.ownerRole
     });
 
-    // 4. Write chain-linked log entry
     const { chainIndex, previousHash } = await getChainTip();
 
     const logData = {
@@ -101,16 +86,10 @@ exports.upload = async (req, res) => {
       timestamp:    new Date()
     };
 
-    // Compute this entry's own hash BEFORE saving
     const entryHash = computeEntryHash({ ...logData, chainIndex, timestamp: logData.timestamp });
-
     await BlockchainLog.create({ ...logData, entryHash });
 
-    res.json({
-      message:    "Upload successful",
-      hash,
-      contractId: contract.contractId
-    });
+    res.json({ message: "Upload successful", hash, contractId: contract.contractId });
 
   } catch (error) {
     console.error("Upload error:", error);
@@ -160,17 +139,16 @@ exports.importCSV = async (req, res) => {
               ...blockchainMetrics
             };
 
-            const plaintext  = JSON.stringify(metadata, null, 2);
-            const encrypted  = encrypt(plaintext);
-            const hash       = crypto
-              .createHash("sha256")
-              .update(plaintext + Date.now() + importedCount)
-              .digest("hex");
+            const plaintext = JSON.stringify(metadata, null, 2);
+            const encrypted = encrypt(plaintext);
+
+            // FIX: randomBytes per row — eliminates collision on identical CSV rows
+            const entropy = crypto.randomBytes(8).toString("hex");
+            const hash    = crypto.createHash("sha256").update(plaintext + entropy).digest("hex");
 
             const ownerRole = row.ownerRole || row.Data_Owner || "System";
             const policy    = row.Access_Policy || "role:CityAuthority";
 
-            // Deploy PolicyContract per row ─────────────────
             const contract = new PolicyContract(policy, ownerRole, hash);
 
             await Dataset.create({
@@ -181,7 +159,6 @@ exports.importCSV = async (req, res) => {
               policy
             });
 
-            // Chain-linked log
             const { chainIndex, previousHash } = await getChainTip();
 
             const logData = {
@@ -228,7 +205,7 @@ exports.importCSV = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   CSV EXPORT  (unchanged)
+   CSV EXPORT
 ───────────────────────────────────────────────────────────── */
 exports.exportCSV = async (req, res) => {
   try {
@@ -263,7 +240,7 @@ exports.exportCSV = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   FETCH ALL  (unchanged)
+   FETCH ALL
 ───────────────────────────────────────────────────────────── */
 exports.getAll = async (req, res) => {
   try {

@@ -1,22 +1,9 @@
-/**
- * accessController.js  (updated)
- * ─────────────────────────────────────────────────────────────
- * Changes from original:
- *   1. requestAccess() now instantiates a PolicyContract per
- *      dataset and calls contract.execute() instead of the
- *      bare evaluatePolicy() function.
- *   2. Every access event is logged with contractId and full
- *      chain-linking fields (previousHash, entryHash, chainIndex).
- *   3. getLogs() is unchanged.
- */
-
-const Dataset         = require("../models/Dataset");
-const BlockchainLog   = require("../models/BlockchainLog");
-const { decrypt }     = require("../utils/crypto");
-const PolicyContract  = require("../utils/SmartContract");
+const Dataset            = require("../models/Dataset");
+const BlockchainLog      = require("../models/BlockchainLog");
+const { decrypt }        = require("../utils/crypto");
+const PolicyContract     = require("../utils/SmartContract");
 const { computeEntryHash } = require("../utils/chainVerifier");
 
-// ── Helper: next chain index + previous hash ───────────────
 const getChainTip = async () => {
   const last = await BlockchainLog
     .findOne()
@@ -55,19 +42,17 @@ exports.requestAccess = async (req, res) => {
     }
 
     const grantedRecords = [];
+    // FIX: track decrypt failures so caller knows the result is partial
+    let decryptErrors = 0;
 
     for (const record of datasets) {
-      // ── Deploy a PolicyContract for this record's policy ──
       const contract = new PolicyContract(record.policy, record.ownerRole, record.hash);
-
-      // ── Execute the contract — this IS the access check ──
-      const event = contract.execute(role, attribute);
+      const event    = contract.execute(role, attribute);
 
       console.log(
         `📜 Contract ${contract.contractId.substring(0, 12)}... executed → granted: ${event.granted}`
       );
 
-      // ── Write chain-linked log entry ───────────────────────
       const { chainIndex, previousHash } = await getChainTip();
 
       const logData = {
@@ -83,35 +68,39 @@ exports.requestAccess = async (req, res) => {
         timestamp:    new Date()
       };
 
-      const entryHash = computeEntryHash({
-        ...logData,
-        chainIndex,
-        timestamp: logData.timestamp
-      });
-
+      const entryHash = computeEntryHash({ ...logData, chainIndex, timestamp: logData.timestamp });
       await BlockchainLog.create({ ...logData, entryHash });
 
-      // ── Decrypt and collect if granted ─────────────────────
       if (event.granted) {
         try {
           const decryptedData = decrypt(record.encryptedPayload);
           grantedRecords.push({ hash: record.hash, data: decryptedData });
         } catch (decryptError) {
-          console.error("Decryption error:", decryptError);
+          console.error("Decryption error for record", record.hash, ":", decryptError);
+          // FIX: count instead of silently swallowing
+          decryptErrors++;
         }
       }
     }
 
-    if (!grantedRecords.length) {
+    if (!grantedRecords.length && decryptErrors === 0) {
       return res.status(403).json({
         message: "Access denied: Policy requirements not met for any records"
       });
     }
 
+    if (!grantedRecords.length && decryptErrors > 0) {
+      return res.status(500).json({
+        message: `Access was granted but all ${decryptErrors} record(s) failed to decrypt`
+      });
+    }
+
     res.json({
       category,
-      count:   grantedRecords.length,
-      records: grantedRecords
+      count:         grantedRecords.length,
+      records:       grantedRecords,
+      // FIX: surface partial failures to the caller
+      decryptErrors: decryptErrors > 0 ? decryptErrors : undefined
     });
 
   } catch (error) {
@@ -121,7 +110,7 @@ exports.requestAccess = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   GET LOGS  (unchanged)
+   GET LOGS
 ───────────────────────────────────────────────────────────── */
 exports.getLogs = async (req, res) => {
   try {
