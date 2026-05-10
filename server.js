@@ -26,10 +26,50 @@ const systemRoutes   = require("./routes/systemRoutes");
 
 const app = express();
 
-app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
-  credentials: true
-}));
+// app.use(cors({
+//   origin: process.env.FRONTEND_URL || "http://localhost:3000",
+//   credentials: true
+// }));
+
+const ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "http://localhost:5000",
+  // Primary production frontend — set this in Render env vars
+  process.env.FRONTEND_URL,
+].filter(Boolean).map(o => o.replace(/\/$/, "")); // strip trailing slashes
+ 
+const corsOptions = {
+  origin: (origin, callback) => {
+    // No origin = non-browser request (curl, Postman, mobile app
+    // without a webview, server-to-server) — always allow.
+    if (!origin) return callback(null, true);
+ 
+    const cleanOrigin = origin.replace(/\/$/, "");
+ 
+    // Exact match against the allowlist
+    if (ALLOWED_ORIGINS.includes(cleanOrigin)) {
+      return callback(null, true);
+    }
+ 
+    // Allow any Vercel preview deployment automatically.
+    // Vercel preview URLs follow the pattern:
+    //   https://<project>-<hash>-<team>.vercel.app
+    if (cleanOrigin.endsWith(".vercel.app")) {
+      return callback(null, true);
+    }
+ 
+    // Blocked
+    console.warn(`🚫 CORS blocked origin: ${origin}`);
+    callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
+  credentials: true,
+  methods:     ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+};
+ 
+// Apply CORS to all routes including preflight OPTIONS requests
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 app.use(express.json());
 
