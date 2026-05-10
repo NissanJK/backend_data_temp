@@ -9,10 +9,10 @@ const PolicyContract     = require("../utils/SmartContract");
 const { computeEntryHash } = require("../utils/chainVerifier");
 
 // ── Helper: next chain index + previous hash ───────────────
-// Race condition note: two simultaneous requests can read the same
-// tip. For single-user/low-concurrency this is acceptable.
-// For production: wrap getChainTip + BlockchainLog.create in a
-// MongoDB session/transaction.
+// FIX: guard against old log entries that have no chainIndex field
+// (written before the smart contract schema update). Without this,
+// last.chainIndex is undefined → undefined + 1 = NaN → Mongoose
+// rejects the create() call and the entire upload fails.
 const getChainTip = async () => {
   const last = await BlockchainLog
     .findOne()
@@ -23,8 +23,12 @@ const getChainTip = async () => {
     return { chainIndex: 0, previousHash: "0".repeat(64) };
   }
 
+  const chainIndex = (typeof last.chainIndex === "number" && !isNaN(last.chainIndex))
+    ? last.chainIndex + 1
+    : 0; // fall back to 0 if old entry has no chainIndex
+
   return {
-    chainIndex:   last.chainIndex + 1,
+    chainIndex,
     previousHash: last.entryHash || "0".repeat(64)
   };
 };
@@ -56,11 +60,8 @@ exports.upload = async (req, res) => {
 
     const payload   = JSON.stringify(dataWithMetrics, null, 2);
     const encrypted = encrypt(payload);
-
-    // FIX: crypto.randomBytes instead of Date.now() — eliminates
-    // hash collision risk when identical payloads are uploaded
-    const entropy = crypto.randomBytes(8).toString("hex");
-    const hash    = crypto.createHash("sha256").update(payload + entropy).digest("hex");
+    const entropy   = crypto.randomBytes(8).toString("hex");
+    const hash      = crypto.createHash("sha256").update(payload + entropy).digest("hex");
 
     const contract = new PolicyContract(req.body.policy, req.body.ownerRole, hash);
     console.log(`📜 PolicyContract deployed: ${contract.contractId.substring(0, 16)}...`);
@@ -141,10 +142,8 @@ exports.importCSV = async (req, res) => {
 
             const plaintext = JSON.stringify(metadata, null, 2);
             const encrypted = encrypt(plaintext);
-
-            // FIX: randomBytes per row — eliminates collision on identical CSV rows
-            const entropy = crypto.randomBytes(8).toString("hex");
-            const hash    = crypto.createHash("sha256").update(plaintext + entropy).digest("hex");
+            const entropy   = crypto.randomBytes(8).toString("hex");
+            const hash      = crypto.createHash("sha256").update(plaintext + entropy).digest("hex");
 
             const ownerRole = row.ownerRole || row.Data_Owner || "System";
             const policy    = row.Access_Policy || "role:CityAuthority";

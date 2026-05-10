@@ -1,18 +1,31 @@
-const express = require("express");
+const express  = require("express");
 const mongoose = require("mongoose");
-const fs = require("fs");
-if (!fs.existsSync("./uploads")) fs.mkdirSync("./uploads");
-const cors = require("cors");
+const fs       = require("fs");
+const cors     = require("cors");
 require("dotenv").config();
 
-const datasetRoutes = require("./routes/datasetRoutes");
-const accessRoutes = require("./routes/accessRoutes");
+// ── CRITICAL: Validate required env vars before anything else ──
+// If SECRET_KEY is missing, crypto-js silently uses the string
+// "undefined" as the AES key. Data appears to encrypt/decrypt
+// fine in the same session but is permanently unreadable if the
+// server ever restarts with a proper key set.
+const REQUIRED_ENV = ["MONGO_URI", "SECRET_KEY"];
+const missingEnv   = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missingEnv.length) {
+  console.error(`❌ Missing required environment variables: ${missingEnv.join(", ")}`);
+  console.error("   Add them to your .env file and restart the server.");
+  process.exit(1);
+}
+
+if (!fs.existsSync("./uploads")) fs.mkdirSync("./uploads");
+
+const datasetRoutes  = require("./routes/datasetRoutes");
+const accessRoutes   = require("./routes/accessRoutes");
 const disasterRoutes = require("./routes/disasterRoutes");
-const systemRoutes = require("./routes/systemRoutes"); // NEW
+const systemRoutes   = require("./routes/systemRoutes");
 
 const app = express();
 
-// CORS configuration
 app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:3000",
   credentials: true
@@ -20,7 +33,6 @@ app.use(cors({
 
 app.use(express.json());
 
-// MongoDB connection (without deprecated options for v5+ compatibility)
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected successfully"))
   .catch(err => {
@@ -28,35 +40,31 @@ mongoose.connect(process.env.MONGO_URI)
     process.exit(1);
   });
 
-// Routes
-app.use("/api/dataset", datasetRoutes);
-app.use("/api/access", accessRoutes);
+app.use("/api/dataset",  datasetRoutes);
+app.use("/api/access",   accessRoutes);
 app.use("/api/disaster", disasterRoutes);
-app.use("/api/system", systemRoutes); // NEW: System management routes
+app.use("/api/system",   systemRoutes);
 
-// Health check endpoint
 app.get("/health", (req, res) => {
-  res.json({ 
-    status: "OK", 
+  res.json({
+    status: "OK",
     timestamp: new Date(),
     services: {
-      database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+      database:           mongoose.connection.readyState === 1 ? "connected" : "disconnected",
       disasterMonitoring: "active"
     }
   });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ message: "Route not found" });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error("Global error:", err);
-  res.status(500).json({ 
+  res.status(500).json({
     message: "Internal server error",
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    error: process.env.NODE_ENV === "development" ? err.message : undefined
   });
 });
 

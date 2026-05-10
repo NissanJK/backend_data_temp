@@ -4,6 +4,8 @@ const { decrypt }        = require("../utils/crypto");
 const PolicyContract     = require("../utils/SmartContract");
 const { computeEntryHash } = require("../utils/chainVerifier");
 
+// ── Helper: next chain index + previous hash ───────────────
+// FIX: guard against NaN when old log entries have no chainIndex.
 const getChainTip = async () => {
   const last = await BlockchainLog
     .findOne()
@@ -14,8 +16,12 @@ const getChainTip = async () => {
     return { chainIndex: 0, previousHash: "0".repeat(64) };
   }
 
+  const chainIndex = (typeof last.chainIndex === "number" && !isNaN(last.chainIndex))
+    ? last.chainIndex + 1
+    : 0;
+
   return {
-    chainIndex:   last.chainIndex + 1,
+    chainIndex,
     previousHash: last.entryHash || "0".repeat(64)
   };
 };
@@ -42,7 +48,6 @@ exports.requestAccess = async (req, res) => {
     }
 
     const grantedRecords = [];
-    // FIX: track decrypt failures so caller knows the result is partial
     let decryptErrors = 0;
 
     for (const record of datasets) {
@@ -77,7 +82,6 @@ exports.requestAccess = async (req, res) => {
           grantedRecords.push({ hash: record.hash, data: decryptedData });
         } catch (decryptError) {
           console.error("Decryption error for record", record.hash, ":", decryptError);
-          // FIX: count instead of silently swallowing
           decryptErrors++;
         }
       }
@@ -99,7 +103,6 @@ exports.requestAccess = async (req, res) => {
       category,
       count:         grantedRecords.length,
       records:       grantedRecords,
-      // FIX: surface partial failures to the caller
       decryptErrors: decryptErrors > 0 ? decryptErrors : undefined
     });
 
