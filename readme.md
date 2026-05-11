@@ -28,27 +28,31 @@ Backend server for DataTrust-SC - a privacy-preserving smart city data sharing s
 
 ```
 DataTrust-SC_backend/
-├── controllers/           # Request handlers
-│   ├── accessController.js       # Access request & policy evaluation
-│   ├── datasetController.js      # Data CRUD operations
-│   ├── disasterController.js     # Disaster monitoring logic
-│   └── systemController.js       # System management (reset)
-├── models/               # MongoDB schemas
-│   ├── Dataset.js               # Main dataset schema
-│   └── BlockchainLog.js         # Audit log schema
-├── routes/               # API route definitions
+├── controllers
+│   ├── accessController.js
+│   ├── datasetController.js
+│   ├── disasterController.js
+│   └── systemController.js
+├── middleware
+│   └── apiKey.js
+├── models
+│   ├── BlockchainLog.js
+│   └── Dataset.js
+├── routes
 │   ├── accessRoutes.js
 │   ├── datasetRoutes.js
 │   ├── disasterRoutes.js
 │   └── systemRoutes.js
-├── utils/                # Utility functions
-│   ├── crypto.js               # Encryption/decryption
-│   ├── policy.js               # ABAC policy evaluation
-│   └── disasterMonitoring.js   # Disaster detection logic
-├── uploads/              # Temporary CSV uploads
-├── .env                  # Environment variables (DO NOT COMMIT)
-├── server.js             # Main application entry point
-└── package.json          # Dependencies
+├── utils
+│   ├── SmartContract.js
+│   ├── chainVerifier.js
+│   ├── crypto.js
+│   └── disasterMonitoring.js
+├── .gitignore
+├── package-lock.json
+├── package.json
+├── readme.md
+└── server.js
 ```
 
 ## 📦 Installation
@@ -63,7 +67,7 @@ DataTrust-SC_backend/
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/NissanJK/DataTrust-SC_backend.git
+git clone https://github.com/NissanJK/backend_data_temp.git
 ```
 
 2. **Install dependencies**

@@ -4,8 +4,6 @@ const { decrypt }        = require("../utils/crypto");
 const PolicyContract     = require("../utils/SmartContract");
 const { computeEntryHash } = require("../utils/chainVerifier");
 
-// ── Helper: next chain index + previous hash ───────────────
-// FIX: guard against NaN when old log entries have no chainIndex.
 const getChainTip = async () => {
   const last = await BlockchainLog
     .findOne()
@@ -26,6 +24,11 @@ const getChainTip = async () => {
   };
 };
 
+// ── SEC-09: Policy length cap ─────────────────────────────
+// A policy with 100k OR clauses takes ~68ms to evaluate.
+// Cap at 500 chars — more than enough for any real policy.
+const MAX_POLICY_LENGTH = 500;
+
 /* ─────────────────────────────────────────────────────────────
    REQUEST ACCESS
 ───────────────────────────────────────────────────────────── */
@@ -33,17 +36,34 @@ exports.requestAccess = async (req, res) => {
   try {
     const { category, role, attribute } = req.body;
 
-    if (!category || !role || !attribute) {
+    // SEC-03: Reject non-string inputs — prevents NoSQL injection
+    // Sending {"$gt": ""} as category would otherwise match ALL documents.
+    if (
+      typeof category  !== "string" ||
+      typeof role      !== "string" ||
+      typeof attribute !== "string"
+    ) {
+      return res.status(400).json({
+        message: "Invalid input: category, role, and attribute must be plain strings"
+      });
+    }
+
+    if (!category.trim() || !role.trim() || !attribute.trim()) {
       return res.status(400).json({
         message: "Missing required fields: category, role, and attribute are required"
       });
     }
 
-    const datasets = await Dataset.find({ "metadata.Data_Category": category });
+    // SEC-03: Strip any $ or . characters that could be MongoDB operators
+    const safeCategory  = category.replace(/[$.\x00]/g, "");
+    const safeRole      = role.replace(/[$.\x00]/g, "");
+    const safeAttribute = attribute.replace(/[$.\x00]/g, "");
+
+    const datasets = await Dataset.find({ "metadata.Data_Category": safeCategory });
 
     if (!datasets.length) {
       return res.status(404).json({
-        message: `No datasets found for category: ${category}`
+        message: `No datasets found for category: ${safeCategory}`
       });
     }
 
@@ -51,8 +71,15 @@ exports.requestAccess = async (req, res) => {
     let decryptErrors = 0;
 
     for (const record of datasets) {
+      // SEC-09: Skip records whose stored policy exceeds the length cap.
+      // This guards against malicious policies injected via CSV import.
+      if (record.policy && record.policy.length > MAX_POLICY_LENGTH) {
+        console.warn(`Skipping record ${record.hash} — policy exceeds max length`);
+        continue;
+      }
+
       const contract = new PolicyContract(record.policy, record.ownerRole, record.hash);
-      const event    = contract.execute(role, attribute);
+      const event    = contract.execute(safeRole, safeAttribute);
 
       console.log(
         `📜 Contract ${contract.contractId.substring(0, 12)}... executed → granted: ${event.granted}`
@@ -63,8 +90,8 @@ exports.requestAccess = async (req, res) => {
       const logData = {
         type:         "ACCESS_REQUEST",
         hash:         record.hash,
-        role,
-        attribute,
+        role:         safeRole,
+        attribute:    safeAttribute,
         policy:       record.policy,
         granted:      event.granted,
         contractId:   contract.contractId,
@@ -100,7 +127,7 @@ exports.requestAccess = async (req, res) => {
     }
 
     res.json({
-      category,
+      category: safeCategory,
       count:         grantedRecords.length,
       records:       grantedRecords,
       decryptErrors: decryptErrors > 0 ? decryptErrors : undefined
@@ -114,11 +141,30 @@ exports.requestAccess = async (req, res) => {
 
 /* ─────────────────────────────────────────────────────────────
    GET LOGS
+   SEC-08: Paginated so the full audit trail can't be dumped
+   in a single request. Default: last 100 entries.
+   Query params: ?page=0&limit=100
 ───────────────────────────────────────────────────────────── */
 exports.getLogs = async (req, res) => {
   try {
-    const logs = await BlockchainLog.find().sort({ timestamp: -1 });
-    res.json(logs);
+    const page  = Math.max(0, parseInt(req.query.page)  || 0);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 100));
+
+    const logs = await BlockchainLog
+      .find()
+      .sort({ timestamp: -1 })
+      .skip(page * limit)
+      .limit(limit);
+
+    const total = await BlockchainLog.countDocuments();
+
+    res.json({
+      logs,
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit)
+    });
   } catch (error) {
     console.error("Get logs error:", error);
     res.status(500).json({ message: "Failed to retrieve logs" });

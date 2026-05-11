@@ -1,11 +1,13 @@
 const express = require("express");
-const router = express.Router();
+const router  = express.Router();
 const { resetSystem, verifyChain } = require("../controllers/systemController");
+const { adminApiKey } = require("../middleware/apiKey");  // SEC-02
 
-// Reset entire system
-router.post("/reset", resetSystem);
+// SEC-02: Reset uses a separate admin key — a leaked read key
+// cannot trigger data deletion
+router.post("/reset", adminApiKey, resetSystem);
 
-// Verify blockchain log chain integrity (new - smart contract addition)
+// Verify blockchain log chain integrity
 router.get("/verify-chain", verifyChain);
 
 module.exports = router;
